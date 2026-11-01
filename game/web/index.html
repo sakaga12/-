@@ -1,0 +1,1963 @@
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>섬광 분대</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+
+<style>
+/* Layout: full-bleed WebGL stage with a tactical-readout HUD pinned to the edges -
+   status along the top, squad roster bottom-left, cost gauge and EX cards bottom-right. */
+:root {
+  color-scheme: dark;
+
+  --bg:        #0a0e16;
+  --panel:     rgba(11, 17, 28, 0.88);
+  --panel-sol: #0f1725;
+  --ink:       #e9eef7;
+  --ink-dim:   #8795ab;
+  --ink-faint: #5d6a7d;
+  --line:      rgba(146, 168, 200, 0.20);
+  --cost:      #4fc3f7;
+  --ally:      #5fd68a;
+  --enemy:     #e8565c;
+  --crit:      #ffc24a;
+  --ex:        #ff6fa5;
+  --warn:      #ff8a5c;
+
+  --display: "Chakra Petch", "IBM Plex Sans KR", system-ui, sans-serif;
+  --body:    "IBM Plex Sans KR", "Chakra Petch", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--body);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; width: 100%; height: 100%; }
+
+/* ---- HUD shell ------------------------------------------------------------ */
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font-family: var(--display);
+}
+#hud button, #hud .tappable { pointer-events: auto; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+/* ---- top status ----------------------------------------------------------- */
+#topbar {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100vw - 32px);
+}
+
+#clock {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 16px;
+  border-radius: 3px;
+}
+#clockTime {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+#clockTime.low { color: var(--warn); }
+#phaseTag {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+
+#controls {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.seg {
+  display: flex;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-dim);
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 7px 11px;
+  min-height: 32px;
+  cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: rgba(79, 195, 247, 0.17); color: var(--cost); }
+.seg button:focus-visible { outline: 2px solid var(--cost); outline-offset: -2px; }
+
+#infoBtn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-dim);
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  border-radius: 3px;
+  min-height: 32px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+/* ---- world-space overlays ------------------------------------------------- */
+#worldLayer { position: absolute; inset: 0; overflow: hidden; }
+
+.unitBar {
+  position: absolute;
+  width: 58px;
+  margin-left: -29px;
+  will-change: transform, opacity;
+}
+.unitBar .track {
+  height: 5px;
+  background: rgba(4, 7, 12, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.unitBar .fill { height: 100%; width: 100%; transform-origin: left center; }
+.unitBar.ally .fill { background: var(--ally); }
+.unitBar.enemy .fill { background: var(--enemy); }
+.unitBar .tag {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 2px #000;
+}
+
+.popText {
+  position: absolute;
+  font-family: var(--display);
+  font-weight: 700;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.8);
+  will-change: transform, opacity;
+}
+
+/* ---- squad roster --------------------------------------------------------- */
+#roster {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  width: min(312px, 48vw);
+}
+.chip {
+  padding: 4px 6px 5px;
+  border-radius: 2px;
+  min-width: 0;
+}
+.chip.down { opacity: 0.4; }
+.chipTop { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
+.chipName {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chipGrade {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex: none;
+}
+.chipMeta {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chipBar { height: 3px; background: rgba(4, 7, 12, 0.8); margin-top: 4px; overflow: hidden; }
+.chipBar i { display: block; height: 100%; background: var(--ally); transform-origin: left center; }
+
+/* ---- cost + cards --------------------------------------------------------- */
+#deck {
+  position: absolute;
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+#hand { display: flex; gap: 6px; }
+
+.card {
+  position: relative;
+  appearance: none;
+  width: 104px;
+  min-height: 86px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--display);
+  text-align: left;
+  padding: 7px 8px 22px;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.card:disabled { cursor: default; opacity: 0.52; }
+.card.ready {
+  border-color: rgba(79, 195, 247, 0.65);
+  box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.3), 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.card.ready:active { transform: translateY(2px) scale(0.985); }
+.card.empty { background: rgba(9, 14, 22, 0.6); border-style: dashed; }
+.card:focus-visible { outline: 2px solid var(--cost); outline-offset: 2px; }
+
+.cardOwner { font-size: 12px; font-weight: 700; letter-spacing: 0.01em; }
+.cardSkill {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--ink-dim);
+  margin-top: 3px;
+  font-family: var(--body);
+}
+.cardCost {
+  position: absolute;
+  right: 7px;
+  bottom: 3px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+.card.ready .cardCost { color: var(--cost); }
+.cardWait {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--ink-faint);
+}
+
+.discard {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  appearance: none;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--ink-faint);
+  font-family: var(--display);
+  font-size: 13px;
+  line-height: 1;
+  width: 26px;
+  height: 20px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.discard:focus-visible { outline: 2px solid var(--cost); outline-offset: 1px; }
+
+#costRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: flex-end;
+}
+#costNum {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--cost);
+  letter-spacing: 0.02em;
+}
+#costGauge { display: flex; gap: 2px; flex: 1; max-width: 336px; }
+#costGauge i {
+  flex: 1;
+  height: 13px;
+  background: rgba(24, 33, 48, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  position: relative;
+  overflow: hidden;
+}
+#costGauge i b {
+  position: absolute;
+  inset: 0;
+  background: var(--cost);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+/* ---- hint + overlays ------------------------------------------------------ */
+#hint {
+  position: absolute;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 106px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border-radius: 3px;
+  font-family: var(--body);
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  transition: opacity 0.6s ease;
+}
+
+#result {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: rgba(5, 8, 14, 0.72);
+  backdrop-filter: blur(3px);
+}
+#resultTitle {
+  font-size: clamp(38px, 11vw, 68px);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+}
+#resultTitle.win { color: var(--cost); }
+#resultTitle.lose { color: var(--enemy); }
+#resultNote { font-family: var(--body); font-size: 12.5px; color: var(--ink-dim); text-align: center; max-width: 30ch; }
+#retry {
+  appearance: none;
+  border: 1px solid rgba(79, 195, 247, 0.6);
+  background: rgba(79, 195, 247, 0.14);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 13px 34px;
+  border-radius: 3px;
+  cursor: pointer;
+  min-height: 48px;
+}
+#retry:focus-visible { outline: 2px solid var(--cost); outline-offset: 2px; }
+
+#sheet {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(16px, env(safe-area-inset-left, 0px));
+  background: rgba(5, 8, 14, 0.8);
+  pointer-events: auto;
+  overflow-y: auto;
+}
+#sheetBody {
+  width: min(560px, 100%);
+  padding: 18px 18px 20px;
+  border-radius: 4px;
+  font-family: var(--body);
+}
+#sheetBody h2 {
+  margin: 0 0 3px;
+  font-family: var(--display);
+  font-size: 17px;
+  letter-spacing: 0.03em;
+}
+#sheetBody p { margin: 0 0 14px; font-size: 12px; color: var(--ink-dim); line-height: 1.55; }
+#sheetBody h3 {
+  margin: 16px 0 6px;
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+.tableWrap { overflow-x: auto; }
+#sheetBody table {
+  border-collapse: collapse;
+  font-family: var(--display);
+  font-size: 11px;
+  min-width: 100%;
+}
+#sheetBody th, #sheetBody td {
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#sheetBody th { color: var(--ink-faint); font-weight: 600; letter-spacing: 0.06em; }
+#sheetBody td.good { color: var(--ally); font-weight: 700; }
+#sheetBody td.bad { color: var(--enemy); }
+#sheetBody tbody th { text-align: left; color: var(--ink); }
+#closeSheet {
+  margin-top: 18px;
+  appearance: none;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: rgba(79, 195, 247, 0.1);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  padding: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  min-height: 46px;
+}
+
+#fatal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--body);
+  font-size: 13px;
+  color: var(--ink-dim);
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* ---- portrait / narrow --------------------------------------------------- */
+@media (max-aspect-ratio: 9/10), (max-width: 540px) {
+  #roster {
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    width: auto;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 122px);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .chipMeta { display: none; }
+  #deck {
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    align-items: stretch;
+  }
+  #hand { justify-content: space-between; }
+  .card { flex: 1; width: auto; min-height: 80px; }
+  #costGauge { max-width: none; }
+  #hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+  #hint { transition: none; }
+}
+</style>
+
+<div id="stage"></div>
+
+<div id="hud">
+  <div id="topbar">
+    <div id="clock" class="panel">
+      <span id="clockTime">3:00</span>
+      <span id="phaseTag">OUTDOOR</span>
+    </div>
+    <div id="controls">
+      <div class="seg" id="terrainSeg" role="group" aria-label="지형">
+        <button type="button" data-terrain="Street">시가지</button>
+        <button type="button" data-terrain="Outdoor" aria-pressed="true">야외</button>
+        <button type="button" data-terrain="Indoor">실내</button>
+      </div>
+      <div class="seg" id="speedSeg" role="group" aria-label="전투 속도">
+        <button type="button" data-speed="1" aria-pressed="true">1x</button>
+        <button type="button" data-speed="2">2x</button>
+        <button type="button" data-speed="3">3x</button>
+      </div>
+      <button type="button" id="infoBtn" aria-expanded="false">상성표</button>
+    </div>
+  </div>
+
+  <div id="worldLayer"></div>
+  <div id="roster"></div>
+
+  <div id="deck">
+    <div id="hand"></div>
+    <div id="costRow">
+      <span id="costNum">3.00</span>
+      <span id="costGauge"></span>
+    </div>
+  </div>
+
+  <div id="hint" class="panel">카드를 눌러 EX 스킬 발동 · 좌하단 <b>x</b>는 코스트 1로 카드 교체</div>
+
+  <div id="result" hidden>
+    <div id="resultTitle"></div>
+    <div id="resultNote"></div>
+    <button type="button" id="retry">다시 시작</button>
+  </div>
+
+  <div id="sheet" hidden>
+    <div id="sheetBody" class="panel">
+      <h2>전투 규칙</h2>
+      <p>속성 상성이 최대 4배 차이를 만듭니다. 지형 적성은 공격력과 엄폐율에 동시에 작용하고, D등급은 <b>엄폐를 전혀 못 합니다</b>.</p>
+
+      <h3>속성 상성</h3>
+      <div class="tableWrap">
+        <table>
+          <thead><tr><th>공격 \ 방어</th><th>경장갑</th><th>중장갑</th><th>특수장갑</th><th>탄력장갑</th></tr></thead>
+          <tbody>
+            <tr><th>폭발</th><td class="good">2.0</td><td class="bad">0.5</td><td>1.0</td><td>0.9</td></tr>
+            <tr><th>관통</th><td class="bad">0.5</td><td class="good">2.0</td><td>1.0</td><td>0.9</td></tr>
+            <tr><th>신비</th><td>1.0</td><td>1.0</td><td class="good">2.0</td><td class="bad">0.9</td></tr>
+            <tr><th>진동</th><td>1.0</td><td>1.0</td><td class="bad">0.8</td><td class="good">2.0</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>지형 적성</h3>
+      <div class="tableWrap">
+        <table>
+          <thead><tr><th>등급</th><th>S</th><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>
+          <tbody>
+            <tr><th>공격 보정</th><td class="good">+30%</td><td>+20%</td><td>+10%</td><td>0%</td><td class="bad">-20%</td></tr>
+            <tr><th>엄폐율</th><td class="good">80%</td><td>75%</td><td>70%</td><td>60%</td><td class="bad">0%</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>코스트</h3>
+      <p style="margin-bottom:0">초당 0.70 회복, 최대 10. EX 스킬은 <b>엄폐를 무시하고 절대 미스하지 않습니다</b> &mdash; 코스트를 내는 대가입니다. 스페셜 2명은 카드가 없고 14초마다 무료로 스킬을 씁니다.</p>
+
+      <button type="button" id="closeSheet">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="fatal">3D 엔진을 불러오는 중…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var fatal = document.getElementById("fatal");
+  if (typeof THREE === "undefined") {
+    fatal.textContent = "3D 엔진(three.js)을 불러오지 못했습니다. 네트워크를 확인하고 페이지를 새로 고쳐 주세요.";
+    return;
+  }
+  fatal.remove();
+
+  // =====================================================================
+  // Balance tables. These mirror Assets/BlueLike/Scripts/Core/DamageTable.cs
+  // one-for-one, so anything you learn tuning here transfers to the Unity
+  // project unchanged.
+  // =====================================================================
+  var TYPE_CHART = {
+    Explosive: { Light: 2.00, Heavy: 0.50, Special: 1.00, Elastic: 0.90 },
+    Piercing:  { Light: 0.50, Heavy: 2.00, Special: 1.00, Elastic: 0.90 },
+    Mystic:    { Light: 1.00, Heavy: 1.00, Special: 2.00, Elastic: 0.90 },
+    Sonic:     { Light: 1.00, Heavy: 1.00, Special: 0.80, Elastic: 2.00 }
+  };
+  var TERRAIN_ATK   = { S: 0.30, A: 0.20, B: 0.10, C: 0.00, D: -0.20 };
+  var TERRAIN_COVER = { S: 0.80, A: 0.75, B: 0.70, C: 0.60, D: 0.00 };
+
+  var DEF_K = 1200;
+  var CRIT_K = 1000;
+  var MAX_COST = 10;
+  var COST_REGEN = 0.70;
+  var START_COST = 3;
+  var CARD_COOLDOWN = 6;
+  var DISCARD_COST = 1;
+  var BATTLE_SECONDS = 180;
+  var HAND_SIZE = 3;
+
+  var TYPE_KO = { Explosive: "폭발", Piercing: "관통", Mystic: "신비", Sonic: "진동" };
+  var ARMOR_KO = { Light: "경장갑", Heavy: "중장갑", Special: "특수장갑", Elastic: "탄력장갑" };
+  var LANE_Z = [-3.6, 0, 3.6];
+  var RANGE_DIST = { Melee: 1.6, Short: 5, Mid: 9, Long: 15 };
+
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  // =====================================================================
+  // Roster. Mirrors SampleRoster.cs - four Strikers covering one attack type
+  // each, two Specials, and one enemy per armour class so the chart is
+  // visible from the first volley.
+  // =====================================================================
+  function squadData() {
+    return [
+      { lane: 1, body: 0xf4769a, halo: 0xff8fb0, stats: {
+        name: "하즈키", role: "Striker", atkType: "Explosive", armor: "Light", range: "Mid",
+        maxHp: 11800, attack: 1620, defence: 380, critRate: 300, critResist: 100, critDamage: 1.50,
+        accuracy: 1000, evasion: 200, mag: 25, fireInterval: 0.14, reload: 2.0, shotRatio: 0.22,
+        stability: 0.72, speed: 3.4, grades: { Street: "A", Outdoor: "B", Indoor: "C" },
+        exCost: 3, exName: "제압 사격", exKind: "MultiHit", exPower: 4.2, exHits: 6 } },
+
+      { lane: 0, body: 0x6aa6f5, halo: 0x8cc0ff, stats: {
+        name: "미즈키", role: "Striker", atkType: "Piercing", armor: "Light", range: "Long",
+        maxHp: 9400, attack: 2240, defence: 300, critRate: 520, critResist: 100, critDamage: 1.80,
+        accuracy: 1000, evasion: 200, mag: 4, fireInterval: 0.95, reload: 2.8, shotRatio: 1.05,
+        stability: 0.92, speed: 2.8, grades: { Street: "B", Outdoor: "S", Indoor: "D" },
+        exCost: 4, exName: "관통 저격", exKind: "SingleBurst", exPower: 7.5, exHits: 1 } },
+
+      { lane: 2, body: 0xb086f5, halo: 0xc9a4ff, stats: {
+        name: "사에라", role: "Striker", atkType: "Mystic", armor: "Special", range: "Short",
+        maxHp: 10200, attack: 1780, defence: 340, critRate: 300, critResist: 100, critDamage: 1.50,
+        accuracy: 1000, evasion: 200, mag: 30, fireInterval: 0.11, reload: 1.8, shotRatio: 0.18,
+        stability: 0.68, speed: 3.8, grades: { Street: "S", Outdoor: "C", Indoor: "A" },
+        exCost: 4, exName: "공명 폭발", exKind: "AreaBlast", exPower: 5.4, exHits: 2, exRadius: 4.5 } },
+
+      { lane: 1, body: 0xf5c15c, halo: 0xffd98a, stats: {
+        name: "츠무기", role: "Striker", atkType: "Sonic", armor: "Heavy", range: "Melee",
+        maxHp: 19600, attack: 1240, defence: 980, critRate: 300, critResist: 320, critDamage: 1.50,
+        accuracy: 1000, evasion: 160, mag: 2, fireInterval: 0.8, reload: 2.4, shotRatio: 1.10,
+        stability: 0.85, speed: 3.0, grades: { Street: "A", Outdoor: "C", Indoor: "S" },
+        exCost: 2, exName: "방벽 전개", exKind: "Shield", exPower: 4.0, exHits: 1 } },
+
+      { lane: 0, body: 0x6fe0b4, halo: 0x9bf0cf, stats: {
+        name: "나기사", role: "Special", atkType: "Mystic", armor: "Light", range: "Long",
+        maxHp: 8800, attack: 980, defence: 260, healPower: 2400, critRate: 240, critResist: 100,
+        critDamage: 1.50, accuracy: 1000, evasion: 200, mag: 8, fireInterval: 0.55, reload: 2.4,
+        shotRatio: 0.35, stability: 0.85, speed: 2.6, grades: { Street: "B", Outdoor: "B", Indoor: "A" },
+        exName: "응급 처치", exKind: "Heal", exPower: 1.6, exHits: 1 } },
+
+      { lane: 2, body: 0xe6e2d8, halo: 0xffd98f, stats: {
+        name: "코토하", role: "Special", atkType: "Explosive", armor: "Light", range: "Long",
+        maxHp: 9100, attack: 1120, defence: 280, critRate: 240, critResist: 100, critDamage: 1.50,
+        accuracy: 1000, evasion: 200, mag: 10, fireInterval: 0.5, reload: 2.2, shotRatio: 0.40,
+        stability: 0.85, speed: 2.6, grades: { Street: "A", Outdoor: "B", Indoor: "B" },
+        exName: "화력 지원 요청", exKind: "AttackBuff", exPower: 3.0, exHits: 1 } }
+    ];
+  }
+
+  function waveData() {
+    return [
+      { lane: 0, body: 0xd1544f, halo: 0xe0635c, stats: {
+        name: "정찰병", role: "Striker", atkType: "Explosive", armor: "Light", range: "Mid",
+        maxHp: 14000, attack: 1150, defence: 240, critRate: 200, critResist: 150, critDamage: 1.5,
+        accuracy: 900, evasion: 160, mag: 20, fireInterval: 0.18, reload: 2.2, shotRatio: 0.20,
+        stability: 0.80, speed: 2.4, grades: { Street: "B", Outdoor: "B", Indoor: "B" } } },
+
+      { lane: 1, body: 0x8d93a3, halo: 0xb3bac8, stats: {
+        name: "중장병", role: "Striker", atkType: "Piercing", armor: "Heavy", range: "Short",
+        maxHp: 34000, attack: 1480, defence: 1250, critRate: 200, critResist: 400, critDamage: 1.5,
+        accuracy: 900, evasion: 90, mag: 6, fireInterval: 0.5, reload: 2.6, shotRatio: 0.55,
+        stability: 0.85, speed: 1.9, grades: { Street: "B", Outdoor: "B", Indoor: "B" } } },
+
+      { lane: 2, body: 0x8a5cc4, halo: 0xb77ef5, stats: {
+        name: "술사", role: "Striker", atkType: "Mystic", armor: "Special", range: "Long",
+        maxHp: 17000, attack: 1620, defence: 420, critRate: 260, critResist: 150, critDamage: 1.5,
+        accuracy: 900, evasion: 170, mag: 5, fireInterval: 0.7, reload: 3.0, shotRatio: 0.70,
+        stability: 0.82, speed: 2.0, grades: { Street: "B", Outdoor: "B", Indoor: "B" } } },
+
+      { lane: 1, body: 0xe08a42, halo: 0xffa355, stats: {
+        name: "파쇄병", role: "Striker", atkType: "Sonic", armor: "Elastic", range: "Melee",
+        maxHp: 26000, attack: 1700, defence: 760, critRate: 220, critResist: 200, critDamage: 1.5,
+        accuracy: 900, evasion: 130, mag: 3, fireInterval: 0.65, reload: 2.2, shotRatio: 0.85,
+        stability: 0.84, speed: 2.8, grades: { Street: "B", Outdoor: "B", Indoor: "B" } } }
+    ];
+  }
+
+  // =====================================================================
+  // Damage. Single source of truth, same order of operations as
+  // DamageCalculator.Compute().
+  // =====================================================================
+  function computeDamage(req) {
+    var a = req.attacker, d = req.defender;
+    var out = { amount: 0, crit: false, blocked: false, missed: false, typeMult: 1 };
+
+    var typeMult = TYPE_CHART[a.atkType][d.armor];
+    out.typeMult = typeMult;
+
+    if (!req.cannotMiss) {
+      var hitChance = Math.min(1, Math.max(0.25, a.accuracy / (a.accuracy + d.evasion * 0.5)));
+      if (Math.random() > hitChance) { out.missed = true; return out; }
+    }
+
+    if (req.defenderInCover && a.range !== "Melee") {
+      var coverRate = TERRAIN_COVER[d.grades[req.terrain]];
+      if (Math.random() < coverRate) { out.blocked = true; return out; }
+    }
+
+    var terrainBonus = 1 + TERRAIN_ATK[a.grades[req.terrain]];
+    var dmg = a.attack * req.powerRatio * typeMult * terrainBonus * (req.attackerBuff || 1);
+    dmg *= DEF_K / (DEF_K + d.defence);
+    dmg *= (req.defenderTaken || 1);
+    dmg *= rand(a.stability, 1);
+
+    var net = Math.max(0, a.critRate - d.critResist);
+    if (Math.random() < net / (net + CRIT_K)) {
+      out.crit = true;
+      dmg *= a.critDamage;
+    }
+
+    out.amount = Math.max(1, dmg);
+    return out;
+  }
+
+  // =====================================================================
+  // Renderer, scene, toon shading
+  // =====================================================================
+  THREE.ColorManagement.enabled = false;
+
+  var stage = document.getElementById("stage");
+  var renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  stage.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x5d7fa6);
+  scene.fog = new THREE.Fog(0x5d7fa6, 62, 150);
+
+  var camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+
+  var LIGHT_DIR = new THREE.Vector3(0.55, 0.78, 0.32).normalize();
+  var screenRes = { value: new THREE.Vector2(1, 1) };
+
+  var TOON_VERT = [
+    "varying vec3 vWorldNormal;",
+    "varying vec3 vWorldPos;",
+    "void main() {",
+    "  vWorldNormal = normalize(mat3(modelMatrix) * normal);",
+    "  vec4 wp = modelMatrix * vec4(position, 1.0);",
+    "  vWorldPos = wp.xyz;",
+    "  gl_Position = projectionMatrix * viewMatrix * wp;",
+    "}"
+  ].join("\n");
+
+  // Stepped cel diffuse plus a rim light and a hard-edged toon specular.
+  // This is the AnimeToon.shader forward pass minus the SDF face path, which
+  // needs a hand-painted map the placeholder capsules have no use for.
+  var TOON_FRAG = [
+    "uniform vec3 uBase;",
+    "uniform vec3 uShadow;",
+    "uniform vec3 uLightDir;",
+    "uniform vec3 uRim;",
+    "uniform vec3 uEmission;",
+    "uniform float uThreshold;",
+    "uniform float uSoftness;",
+    "uniform float uSteps;",
+    "uniform float uAmbient;",
+    "uniform float uRimPower;",
+    "uniform float uRimIntensity;",
+    "uniform float uSpecPower;",
+    "uniform float uSpecIntensity;",
+    "uniform float uSpecThreshold;",
+    "varying vec3 vWorldNormal;",
+    "varying vec3 vWorldPos;",
+    "float cel(float hl) {",
+    "  if (uSteps <= 1.5) {",
+    "    return smoothstep(uThreshold - uSoftness, uThreshold + uSoftness, hl);",
+    "  }",
+    "  float s = max(1.0, uSteps);",
+    "  float scaled = clamp((hl - uThreshold * 0.5) / max(0.001, 1.0 - uThreshold * 0.5), 0.0, 1.0);",
+    "  float q = floor(scaled * s) / s;",
+    "  float e = smoothstep(0.0, uSoftness * s, fract(scaled * s));",
+    "  return clamp(q + e / s, 0.0, 1.0);",
+    "}",
+    "void main() {",
+    "  vec3 N = normalize(vWorldNormal);",
+    "  vec3 L = normalize(uLightDir);",
+    "  vec3 V = normalize(cameraPosition - vWorldPos);",
+    "  float hl = dot(N, L) * 0.5 + 0.5;",
+    "  float lit = cel(hl);",
+    "  vec3 col = mix(uBase * uShadow, uBase, lit);",
+    "  col += uBase * uAmbient;",
+    "  vec3 H = normalize(L + V);",
+    "  float spec = pow(max(dot(N, H), 0.0), uSpecPower);",
+    "  spec = smoothstep(uSpecThreshold, uSpecThreshold + 0.03, spec);",
+    "  col += spec * uSpecIntensity * lit;",
+    "  float fres = 1.0 - max(dot(N, V), 0.0);",
+    "  col += pow(fres, uRimPower) * uRimIntensity * uRim * clamp(hl, 0.0, 1.0);",
+    "  col += uEmission;",
+    "  gl_FragColor = vec4(col, 1.0);",
+    "}"
+  ].join("\n");
+
+  // Inverted-hull outline: back faces pushed outward in clip space, so the
+  // line keeps a constant pixel width however far the camera pulls back.
+  var OUTLINE_VERT = [
+    "uniform float uWidth;",
+    "uniform vec2 uRes;",
+    "void main() {",
+    "  vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "  vec3 nView = normalize(normalMatrix * normal);",
+    "  vec4 nClip = projectionMatrix * vec4(nView, 0.0);",
+    "  vec2 off = normalize(nClip.xy + vec2(1e-6)) * uWidth * 2.0 * clip.w / uRes;",
+    "  clip.xy += off;",
+    "  gl_Position = clip;",
+    "}"
+  ].join("\n");
+
+  var OUTLINE_FRAG = [
+    "uniform vec3 uColor;",
+    "void main() { gl_FragColor = vec4(uColor, 1.0); }"
+  ].join("\n");
+
+  function toonMaterial(opts) {
+    opts = opts || {};
+    var base = new THREE.Color(opts.color === undefined ? 0xffffff : opts.color);
+    var shadowTint = opts.shadow !== undefined
+      ? new THREE.Color(opts.shadow)
+      : base.clone().lerp(new THREE.Color(0x6a73a8), 0.55).multiplyScalar(1 / Math.max(0.08, base.getHSL({}).l * 2 || 1));
+
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uBase: { value: base },
+        uShadow: { value: opts.shadowMul !== undefined
+          ? new THREE.Color(opts.shadowMul, opts.shadowMul, opts.shadowMul)
+          : new THREE.Color(0.47, 0.49, 0.69) },
+        uLightDir: { value: LIGHT_DIR },
+        uRim: { value: new THREE.Color(opts.rim === undefined ? 0xdfe9ff : opts.rim) },
+        uEmission: { value: new THREE.Color(opts.emission === undefined ? 0x000000 : opts.emission) },
+        uThreshold: { value: opts.threshold === undefined ? 0.5 : opts.threshold },
+        uSoftness: { value: opts.softness === undefined ? 0.035 : opts.softness },
+        uSteps: { value: opts.steps === undefined ? 2 : opts.steps },
+        uAmbient: { value: opts.ambient === undefined ? 0.17 : opts.ambient },
+        uRimPower: { value: opts.rimPower === undefined ? 4.5 : opts.rimPower },
+        uRimIntensity: { value: opts.rimIntensity === undefined ? 0.45 : opts.rimIntensity },
+        uSpecPower: { value: opts.specPower === undefined ? 42 : opts.specPower },
+        uSpecIntensity: { value: opts.specIntensity === undefined ? 0.22 : opts.specIntensity },
+        uSpecThreshold: { value: 0.5 }
+      },
+      vertexShader: TOON_VERT,
+      fragmentShader: TOON_FRAG
+    });
+  }
+
+  function outlineMaterial(width, color) {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uWidth: { value: width },
+        uRes: screenRes,
+        uColor: { value: new THREE.Color(color === undefined ? 0x14121c : color) }
+      },
+      vertexShader: OUTLINE_VERT,
+      fragmentShader: OUTLINE_FRAG,
+      side: THREE.BackSide
+    });
+  }
+
+  /** Mesh plus its outline shell, as one object you can position. */
+  function toonMesh(geometry, matOpts, outlineWidth, outlineColor) {
+    var mesh = new THREE.Mesh(geometry, toonMaterial(matOpts));
+    if (outlineWidth > 0) {
+      mesh.add(new THREE.Mesh(geometry, outlineMaterial(outlineWidth, outlineColor)));
+    }
+    return mesh;
+  }
+
+  // ---- stage geometry ------------------------------------------------------
+  var GROUND_GEO = new THREE.BoxGeometry(94, 0.5, 26);
+  var STRIP_GEO = new THREE.BoxGeometry(88, 0.03, 2.7);
+  var COVER_GEO = new THREE.BoxGeometry(0.95, 0.75, 1.75);
+  var BODY_GEO = new THREE.CapsuleGeometry(0.27, 0.74, 6, 14);
+  var HEAD_GEO = new THREE.SphereGeometry(0.245, 18, 14);
+  var HALO_GEO = new THREE.TorusGeometry(0.27, 0.029, 7, 22);
+  var TRACER_GEO = new THREE.BoxGeometry(1, 0.055, 0.055);
+
+  var world = new THREE.Group();
+  scene.add(world);
+
+  var ground = toonMesh(GROUND_GEO, { color: 0x3f4654, shadowMul: 0.72, ambient: 0.34, specIntensity: 0, rimIntensity: 0.1, steps: 1 }, 0);
+  ground.position.y = -0.25;
+  world.add(ground);
+
+  for (var li = 0; li < LANE_Z.length; li++) {
+    var strip = toonMesh(STRIP_GEO, {
+      color: 0x59627a, shadowMul: 0.78, ambient: 0.34, specIntensity: 0, rimIntensity: 0, steps: 1
+    }, 0);
+    strip.position.set(0, 0.015, LANE_Z[li]);
+    world.add(strip);
+  }
+
+  // ---- cover ---------------------------------------------------------------
+  var COVER_X = [-9, -4.5, 0, 4.5, 9];
+  var coverPoints = [];
+
+  for (var cl = 0; cl < LANE_Z.length; cl++) {
+    for (var ci = 0; ci < COVER_X.length; ci++) {
+      var block = toonMesh(COVER_GEO, {
+        color: 0x6e6451, shadowMul: 0.62, ambient: 0.26, specIntensity: 0.05, rimIntensity: 0.2
+      }, 1.4);
+      block.position.set(COVER_X[ci], 0.375, LANE_Z[cl]);
+      world.add(block);
+      coverPoints.push({ x: COVER_X[ci], lane: cl, occupant: null });
+    }
+  }
+
+  // =====================================================================
+  // Units
+  // =====================================================================
+  var units = [];
+  var allies = [];
+  var enemies = [];
+
+  function buildModel(bodyColor, haloColor) {
+    var group = new THREE.Group();
+
+    var body = toonMesh(BODY_GEO, { color: bodyColor, rimIntensity: 0.5 }, 2.2);
+    body.position.y = 0.86;
+    group.add(body);
+
+    var head = toonMesh(HEAD_GEO, { color: 0xf8e6da, specIntensity: 0.1, rimIntensity: 0.4 }, 1.9);
+    head.position.y = 1.72;
+    group.add(head);
+
+    // The halo is the one piece of silhouette that says what genre this is,
+    // so it gets emission and no outline.
+    var halo = toonMesh(HALO_GEO, {
+      color: haloColor, emission: new THREE.Color(haloColor).multiplyScalar(0.55),
+      steps: 1, ambient: 0.6, rimIntensity: 0.9, specIntensity: 0
+    }, 0);
+    halo.position.y = 2.2;
+    halo.rotation.set(1.29, 0, 0.21);
+    group.add(halo);
+
+    return { group: group, halo: halo, body: body };
+  }
+
+  function makeUnit(entry, faction, x) {
+    var s = entry.stats;
+    var model = buildModel(entry.body, entry.halo);
+
+    var unit = {
+      stats: s,
+      faction: faction,
+      lane: entry.lane,
+      x: x,
+      z: LANE_Z[entry.lane],
+      hp: s.maxHp,
+      state: "Idle",
+      target: null,
+      ammo: s.mag > 0 ? s.mag : Infinity,
+      nextShot: 0,
+      reloadDone: 0,
+      inCover: false,
+      cover: null,
+      atkBuff: 1,
+      atkBuffUntil: 0,
+      taken: 1,
+      takenUntil: 0,
+      retarget: 0,
+      deadAt: 0,
+      autoSkillAt: 0,
+      model: model,
+      forward: faction === "Player" ? 1 : -1
+    };
+
+    model.group.position.set(x, 0, unit.z);
+    model.group.rotation.y = faction === "Player" ? Math.PI * 0.5 : -Math.PI * 0.5;
+    world.add(model.group);
+
+    units.push(unit);
+    (faction === "Player" ? allies : enemies).push(unit);
+    return unit;
+  }
+
+  function isDead(u) { return u.state === "Dead"; }
+  function hpFrac(u) { return Math.max(0, u.hp) / u.stats.maxHp; }
+  function prefDist(u) { return RANGE_DIST[u.stats.range]; }
+  function atkBuff(u) { return now < u.atkBuffUntil ? u.atkBuff : 1; }
+  function takenMul(u) { return now < u.takenUntil ? u.taken : 1; }
+  function muzzlePos(u) {
+    return new THREE.Vector3(u.x + u.forward * 0.34, 1.16, u.z + 0.2);
+  }
+
+  // =====================================================================
+  // Battle state
+  // =====================================================================
+  var battle = {
+    terrain: "Outdoor",
+    phase: "Fighting",
+    timeLeft: BATTLE_SECONDS,
+    cost: START_COST,
+    speed: 1,
+    timeScale: 1,
+    exBusy: false,
+    exUntil: 0,
+    exCaster: null,
+    exStage: 0,
+    exCard: null
+  };
+
+  var now = 0;          // battle clock, advanced by scaled dt
+  var deck = [];
+  var hand = [null, null, null];
+
+  function releaseCover(u) {
+    for (var i = 0; i < coverPoints.length; i++) {
+      if (coverPoints[i].occupant === u) coverPoints[i].occupant = null;
+    }
+  }
+
+  function findCover(u, targetX) {
+    var best = null, bestScore = Infinity;
+    var preferred = prefDist(u);
+
+    for (var i = 0; i < coverPoints.length; i++) {
+      var p = coverPoints[i];
+      if (p.lane !== u.lane) continue;
+      if (p.occupant && p.occupant !== u && !isDead(p.occupant)) continue;
+      // Reject cover sitting past the enemy.
+      if ((targetX - p.x) * u.forward < 0) continue;
+
+      var score = Math.abs(Math.abs(p.x - targetX) - preferred);
+      if (score < bestScore) { bestScore = score; best = p; }
+    }
+    return best;
+  }
+
+  function claimCover(u, p) {
+    if (u.cover && u.cover !== p) u.cover.occupant = null;
+    p.occupant = u;
+    u.cover = p;
+    u.inCover = true;
+    u.state = "Cover";
+  }
+
+  function findTarget(u) {
+    var pool = u.faction === "Player" ? enemies : allies;
+    var best = null, bestScore = Infinity;
+    for (var i = 0; i < pool.length; i++) {
+      var c = pool[i];
+      if (isDead(c)) continue;
+      var score = Math.abs(c.x - u.x);
+      if (c.lane !== u.lane) score += 6;   // same-lane preference
+      if (score < bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+
+  function living(faction) {
+    var pool = faction === "Player" ? allies : enemies;
+    return pool.filter(function (u) { return !isDead(u); });
+  }
+
+  function killUnit(u) {
+    u.state = "Dead";
+    u.hp = 0;
+    u.inCover = false;
+    releaseCover(u);
+    u.cover = null;
+    u.deadAt = now;
+    popText(new THREE.Vector3(u.x, 2.1, u.z), "DOWN", "var(--enemy)", 1.05);
+
+    if (living("Enemy").length === 0) endBattle("Victory");
+    else if (living("Player").length === 0) endBattle("Defeat");
+  }
+
+  function applyDamage(u, res) {
+    if (isDead(u)) return;
+    if (res.missed || res.blocked) return;
+    u.hp -= res.amount;
+    if (u.hp <= 0) killUnit(u);
+  }
+
+  function reportHit(attacker, defender, res, fromEx) {
+    var color = "#f6f1e6", scale = 1;
+    if (res.missed || res.blocked) { color = "#9aa4b4"; scale = 0.82; }
+    else if (fromEx) { color = "var(--ex)"; scale = 1.45; }
+    else if (res.crit) { color = "var(--crit)"; scale = 1.25; }
+    else if (res.typeMult < 0.95) { color = "#9dc0f0"; }
+
+    var label = res.missed ? "MISS" : (res.blocked ? "BLOCK" : String(Math.round(res.amount)));
+    var at = new THREE.Vector3(defender.x, rand(1.5, 2.05), defender.z);
+    popText(at, label, color, scale);
+    if (!res.missed) spawnTracer(muzzlePos(attacker), at, fromEx);
+  }
+
+  // ---- normal attacks ------------------------------------------------------
+  function fireShot(u) {
+    var s = u.stats;
+    u.nextShot = now + s.fireInterval;
+    if (s.mag > 0) u.ammo--;
+
+    var res = computeDamage({
+      attacker: s,
+      defender: u.target.stats,
+      powerRatio: s.shotRatio,
+      terrain: battle.terrain,
+      defenderInCover: u.target.inCover,
+      attackerBuff: atkBuff(u),
+      defenderTaken: takenMul(u.target),
+      cannotMiss: false
+    });
+
+    applyDamage(u.target, res);
+    reportHit(u, u.target, res, false);
+  }
+
+  // =====================================================================
+  // Auto-battle brain. Same decision order as UnitBrain.cs.
+  // =====================================================================
+  function tickUnit(u, dt) {
+    if (isDead(u)) return;
+    if (u.state === "CastingEx") return;
+
+    u.retarget -= dt;
+    if (u.retarget <= 0 || !u.target || isDead(u.target)) {
+      u.target = findTarget(u);
+      u.retarget = 0.4;
+    }
+    if (!u.target) { u.state = "Idle"; return; }
+
+    if (u.state === "Reloading") {
+      if (now >= u.reloadDone) {
+        u.ammo = u.stats.mag;
+        u.state = "Idle";
+      }
+      return;
+    }
+
+    if (u.stats.mag > 0 && u.ammo <= 0) {
+      u.state = "Reloading";
+      u.reloadDone = now + u.stats.reload;
+      return;
+    }
+
+    // Specials hold the back line and never advance.
+    if (u.stats.role === "Special") {
+      u.inCover = true;
+      shoot(u);
+      return;
+    }
+
+    var distance = Math.abs(u.target.x - u.x);
+    var preferred = prefDist(u);
+
+    if (distance > preferred) {
+      var cover = findCover(u, u.target.x);
+      var standOff = u.target.x - u.forward * preferred;
+      var dest = cover ? cover.x : standOff;
+
+      // Never walk through the target to reach cover on its far side.
+      dest = u.forward > 0 ? Math.min(dest, standOff) : Math.max(dest, standOff);
+
+      u.state = "Advancing";
+      u.inCover = false;
+
+      var delta = dest - u.x;
+      var step = u.stats.speed * dt;
+      if (Math.abs(delta) < 0.12) {
+        if (cover && Math.abs(cover.x - u.x) < 1.2) claimCover(u, cover);
+      } else {
+        u.x += Math.max(-step, Math.min(step, delta));
+      }
+      return;
+    }
+
+    if (u.cover && u.cover.occupant === u) {
+      u.inCover = true;
+    } else {
+      var near = findCover(u, u.target.x);
+      if (near && Math.abs(near.x - u.x) < 2.5) claimCover(u, near);
+      else u.inCover = false;
+    }
+
+    shoot(u);
+  }
+
+  function shoot(u) {
+    if (now < u.nextShot) return;
+    if (!u.target || isDead(u.target)) return;
+    u.state = "Firing";
+    fireShot(u);
+  }
+
+  // =====================================================================
+  // EX skills
+  // =====================================================================
+  function exHit(caster, target, ratio) {
+    if (!target || isDead(target)) return;
+    var res = computeDamage({
+      attacker: caster.stats,
+      defender: target.stats,
+      powerRatio: ratio,
+      terrain: battle.terrain,
+      defenderInCover: false,   // EX ignores cover
+      attackerBuff: atkBuff(caster),
+      defenderTaken: takenMul(target),
+      cannotMiss: true          // and never misses
+    });
+    applyDamage(target, res);
+    reportHit(caster, target, res, true);
+  }
+
+  function resolveSkill(caster) {
+    var s = caster.stats;
+    var target = caster.target && !isDead(caster.target) ? caster.target : findTarget(caster);
+
+    if (s.exKind === "SingleBurst") {
+      exHit(caster, target, s.exPower);
+
+    } else if (s.exKind === "MultiHit") {
+      var hits = Math.max(1, s.exHits);
+      for (var i = 0; i < hits; i++) exHit(caster, target, s.exPower / hits);
+
+    } else if (s.exKind === "AreaBlast") {
+      var cx = target ? target.x : caster.x;
+      var cz = target ? target.z : caster.z;
+      var radius = s.exRadius || 4;
+      var pool = living(caster.faction === "Player" ? "Enemy" : "Player");
+      var n = Math.max(1, s.exHits);
+      for (var j = 0; j < pool.length; j++) {
+        var dx = pool[j].x - cx, dz = pool[j].z - cz;
+        if (Math.sqrt(dx * dx + dz * dz) > radius) continue;
+        for (var h = 0; h < n; h++) exHit(caster, pool[j], s.exPower / n);
+      }
+
+    } else if (s.exKind === "Heal") {
+      var mates = living(caster.faction);
+      var worst = null, lowest = Infinity;
+      for (var k = 0; k < mates.length; k++) {
+        if (hpFrac(mates[k]) < lowest) { lowest = hpFrac(mates[k]); worst = mates[k]; }
+      }
+      if (worst) {
+        var basis = s.healPower || s.attack;
+        var healed = Math.max(1, basis * s.exPower * rand(s.stability, 1));
+        var before = worst.hp;
+        worst.hp = Math.min(worst.stats.maxHp, worst.hp + healed);
+        popText(new THREE.Vector3(worst.x, 2.0, worst.z),
+          "+" + Math.round(worst.hp - before), "var(--ally)", 1.15);
+      }
+
+    } else if (s.exKind === "AttackBuff") {
+      var buffed = living(caster.faction);
+      for (var m = 0; m < buffed.length; m++) {
+        buffed[m].atkBuff = 1 + s.exPower * 0.1;
+        buffed[m].atkBuffUntil = now + 12;
+      }
+      popText(new THREE.Vector3(caster.x, 2.3, caster.z), "ATK UP", "var(--crit)", 1.2);
+
+    } else if (s.exKind === "Shield") {
+      var guarded = living(caster.faction);
+      for (var p = 0; p < guarded.length; p++) {
+        guarded[p].taken = Math.max(0.3, Math.min(0.95, 1 - s.exPower * 0.08));
+        guarded[p].takenUntil = now + 12;
+      }
+      popText(new THREE.Vector3(caster.x, 2.3, caster.z), "GUARD", "var(--cost)", 1.2);
+    }
+  }
+
+  var EX_WINDUP = 0.45;
+  var EX_FOLLOW = 0.35;
+
+  function startEx(caster) {
+    battle.exBusy = true;
+    battle.exCaster = caster;
+    battle.exStage = 0;
+    battle.exUntil = performance.now() / 1000 + EX_WINDUP;
+    battle.phase = "ExCinematic";
+    caster.state = "CastingEx";
+    caster.inCover = false;
+  }
+
+  function tickEx() {
+    if (!battle.exBusy) return;
+    var t = performance.now() / 1000;      // cinematic runs on real time
+    if (t < battle.exUntil) return;
+
+    if (battle.exStage === 0) {
+      resolveSkill(battle.exCaster);
+      battle.exStage = 1;
+      battle.exUntil = t + EX_FOLLOW;
+      return;
+    }
+
+    battle.exBusy = false;
+    if (battle.phase === "ExCinematic") battle.phase = "Fighting";
+    if (battle.exCaster && !isDead(battle.exCaster)) battle.exCaster.state = "Idle";
+    battle.exCaster = null;
+  }
+
+  // =====================================================================
+  // Cards
+  // =====================================================================
+  function buildDeck() {
+    deck = [];
+    hand = [null, null, null];
+    for (var i = 0; i < allies.length; i++) {
+      if (allies[i].stats.role !== "Striker") continue;
+      deck.push({ owner: allies[i], cost: allies[i].stats.exCost, readyAt: 0 });
+    }
+    for (var j = deck.length - 1; j > 0; j--) {
+      var k = Math.floor(Math.random() * (j + 1));
+      var tmp = deck[j]; deck[j] = deck[k]; deck[k] = tmp;
+    }
+    refillHand();
+  }
+
+  function drawCard() {
+    for (var i = 0; i < deck.length; i++) {
+      var c = deck[i];
+      if (now < c.readyAt) continue;
+      if (isDead(c.owner)) { deck.splice(i, 1); i--; continue; }
+      deck.splice(i, 1);
+      return c;
+    }
+    return null;
+  }
+
+  function refillHand() {
+    for (var i = 0; i < HAND_SIZE; i++) {
+      if (hand[i]) continue;
+      hand[i] = drawCard();
+    }
+  }
+
+  function playCard(slot) {
+    var card = hand[slot];
+    if (!card || isDead(card.owner)) return;
+    if (battle.phase !== "Fighting") return;
+    if (battle.exBusy) return;
+    if (Math.floor(battle.cost) < card.cost) return;
+
+    battle.cost -= card.cost;
+    hand[slot] = null;
+    card.readyAt = now + CARD_COOLDOWN;
+    deck.push(card);
+
+    startEx(card.owner);
+    refillHand();
+    renderHand();
+  }
+
+  function discardCard(slot) {
+    var card = hand[slot];
+    if (!card) return;
+    if (Math.floor(battle.cost) < DISCARD_COST) return;
+
+    battle.cost -= DISCARD_COST;
+    hand[slot] = null;
+    card.readyAt = now + CARD_COOLDOWN * 0.5;
+    deck.push(card);
+    refillHand();
+    renderHand();
+  }
+
+  // =====================================================================
+  // World-space overlays: HP bars, damage numbers, tracers
+  // =====================================================================
+  var worldLayer = document.getElementById("worldLayer");
+  var projected = new THREE.Vector3();
+
+  function toScreen(v) {
+    projected.copy(v).project(camera);
+    return {
+      x: (projected.x * 0.5 + 0.5) * window.innerWidth,
+      y: (-projected.y * 0.5 + 0.5) * window.innerHeight,
+      visible: projected.z < 1
+    };
+  }
+
+  function makeBar(u) {
+    var el = document.createElement("div");
+    el.className = "unitBar " + (u.faction === "Player" ? "ally" : "enemy");
+    el.innerHTML = '<div class="tag"></div><div class="track"><div class="fill"></div></div>';
+    worldLayer.appendChild(el);
+    u.barEl = el;
+    u.barFill = el.querySelector(".fill");
+    u.barTag = el.querySelector(".tag");
+  }
+
+  function updateBars() {
+    for (var i = 0; i < units.length; i++) {
+      var u = units[i];
+      if (!u.barEl) continue;
+      if (isDead(u)) { u.barEl.hidden = true; continue; }
+
+      var p = toScreen(new THREE.Vector3(u.x, 2.45, u.z));
+      if (!p.visible) { u.barEl.hidden = true; continue; }
+
+      u.barEl.hidden = false;
+      u.barEl.style.transform = "translate(" + p.x + "px," + p.y + "px)";
+      u.barFill.style.transform = "scaleX(" + hpFrac(u) + ")";
+
+      var tag = u.state === "Reloading" ? "RELOAD" : (u.inCover ? "COVER" : "");
+      if (u.barTag.textContent !== tag) u.barTag.textContent = tag;
+    }
+  }
+
+  // ---- damage numbers ------------------------------------------------------
+  var POP_POOL = 26;
+  var pops = [];
+  for (var pi = 0; pi < POP_POOL; pi++) {
+    var pel = document.createElement("div");
+    pel.className = "popText";
+    pel.hidden = true;
+    worldLayer.appendChild(pel);
+    pops.push({ el: pel, active: false, born: 0, pos: new THREE.Vector3(), drift: 0, life: 0.85 });
+  }
+
+  function popText(worldPos, text, color, scale) {
+    var slot = null;
+    for (var i = 0; i < pops.length; i++) { if (!pops[i].active) { slot = pops[i]; break; } }
+    if (!slot) {
+      var oldest = Infinity;
+      for (var j = 0; j < pops.length; j++) {
+        if (pops[j].born < oldest) { oldest = pops[j].born; slot = pops[j]; }
+      }
+    }
+    slot.active = true;
+    slot.born = performance.now() / 1000;
+    slot.pos.copy(worldPos);
+    slot.drift = rand(-0.35, 0.35);
+    slot.el.textContent = text;
+    slot.el.style.color = color;
+    slot.el.style.fontSize = (15 * scale) + "px";
+    slot.el.hidden = false;
+  }
+
+  function updatePops() {
+    var t = performance.now() / 1000;
+    for (var i = 0; i < pops.length; i++) {
+      var s = pops[i];
+      if (!s.active) continue;
+      var k = (t - s.born) / s.life;
+      if (k >= 1) { s.active = false; s.el.hidden = true; continue; }
+
+      var p = toScreen(new THREE.Vector3(s.pos.x + s.drift * k, s.pos.y + 1.3 * k, s.pos.z));
+      if (!p.visible) { s.el.hidden = true; continue; }
+      s.el.hidden = false;
+      s.el.style.transform = "translate(" + p.x + "px," + p.y + "px) translate(-50%,-50%)";
+      s.el.style.opacity = String(1 - k * k);
+    }
+  }
+
+  // ---- tracers -------------------------------------------------------------
+  var TRACER_POOL = 36;
+  var tracers = [];
+  var tracerMatNormal = new THREE.MeshBasicMaterial({
+    color: 0xfff0a8, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  var tracerMatEx = new THREE.MeshBasicMaterial({
+    color: 0xff8fc4, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  });
+
+  for (var ti = 0; ti < TRACER_POOL; ti++) {
+    var tm = new THREE.Mesh(TRACER_GEO, tracerMatNormal);
+    tm.visible = false;
+    scene.add(tm);
+    tracers.push({ mesh: tm, active: false, born: 0 });
+  }
+
+  var TRACER_LIFE = 0.085;
+  var tmpDir = new THREE.Vector3();
+  var tmpMid = new THREE.Vector3();
+
+  function spawnTracer(from, to, isEx) {
+    var slot = null;
+    for (var i = 0; i < tracers.length; i++) { if (!tracers[i].active) { slot = tracers[i]; break; } }
+    if (!slot) {
+      var oldest = Infinity;
+      for (var j = 0; j < tracers.length; j++) {
+        if (tracers[j].born < oldest) { oldest = tracers[j].born; slot = tracers[j]; }
+      }
+    }
+
+    tmpDir.subVectors(to, from);
+    var len = tmpDir.length();
+    if (len < 0.01) return;
+    tmpMid.addVectors(from, to).multiplyScalar(0.5);
+
+    var m = slot.mesh;
+    m.material = isEx ? tracerMatEx : tracerMatNormal;
+    m.position.copy(tmpMid);
+    m.scale.set(len, isEx ? 2.4 : 1, isEx ? 2.4 : 1);
+    m.lookAt(to);
+    // BoxGeometry runs along X, lookAt aims -Z, so rotate the long axis onto it.
+    m.rotateY(Math.PI * 0.5);
+    m.visible = true;
+    slot.active = true;
+    slot.born = performance.now() / 1000;
+  }
+
+  function updateTracers() {
+    var t = performance.now() / 1000;
+    for (var i = 0; i < tracers.length; i++) {
+      var s = tracers[i];
+      if (!s.active) continue;
+      var k = (t - s.born) / TRACER_LIFE;
+      if (k >= 1) { s.active = false; s.mesh.visible = false; }
+    }
+  }
+
+  // =====================================================================
+  // Camera rig
+  // =====================================================================
+  // Landscape looks along the lanes; portrait tips the board upright so the
+  // advance axis uses the long side of the screen instead of the short one.
+  var LAND_DIR = new THREE.Vector3(-0.235, 0.485, -0.846).normalize();
+  var PORT_DIR = new THREE.Vector3(-0.05, 0.76, -0.65).normalize();
+  var UP_LAND = new THREE.Vector3(0, 1, 0);
+  var UP_PORT = new THREE.Vector3(1, 0, 0);
+
+  var lookTarget = new THREE.Vector3(0, 1, 0);
+  var desiredLook = new THREE.Vector3();
+  var desiredPos = new THREE.Vector3();
+  var camInitialised = false;
+  var camDist = 16;
+
+  /** The two front lines, so the camera can frame the contact instead of a crowd. */
+  function frontLines() {
+    var allyFront = -Infinity, enemyFront = Infinity;
+    for (var i = 0; i < allies.length; i++) {
+      if (!isDead(allies[i])) allyFront = Math.max(allyFront, allies[i].x);
+    }
+    for (var j = 0; j < enemies.length; j++) {
+      if (!isDead(enemies[j])) enemyFront = Math.min(enemyFront, enemies[j].x);
+    }
+    if (allyFront === -Infinity) allyFront = -10;
+    if (enemyFront === Infinity) enemyFront = 10;
+    return { a: allyFront, e: enemyFront };
+  }
+
+  function updateCamera(realDt) {
+    var portrait = camera.aspect < 1;
+    camera.up.copy(portrait ? UP_PORT : UP_LAND);
+
+    var exOn = battle.exBusy && battle.exCaster;
+    var dir = portrait ? PORT_DIR : LAND_DIR;
+    var sharp = exOn ? 7 : 2.4;
+    var wantFov = exOn ? 32 : 44;
+    var k = 1 - Math.exp(-sharp * realDt);
+
+    camera.fov += (wantFov - camera.fov) * k;
+
+    var tanV = Math.tan(camera.fov * 0.5 * Math.PI / 180);
+    var tanH = tanV * camera.aspect;
+    // The advance axis maps to screen-x in landscape and screen-y in portrait.
+    var tanAdvance = portrait ? tanV : tanH;
+    var tanLane = portrait ? tanH : tanV;
+
+    var wantDist;
+    if (exOn) {
+      desiredLook.set(battle.exCaster.x, 1.15, battle.exCaster.z);
+      wantDist = portrait ? 10 : 6.6;
+    } else {
+      var f = frontLines();
+      desiredLook.set((f.a + f.e) * 0.5, 1.0, 0);
+      var span = Math.max(14, (f.e - f.a) + 12);
+      wantDist = Math.max(
+        (span * 0.5) / Math.max(0.08, tanAdvance),
+        6.4 / Math.max(0.08, tanLane)
+      ) * 1.04 + 1.5;
+    }
+    wantDist = Math.max(9, Math.min(50, wantDist));
+
+    if (!camInitialised) {
+      lookTarget.copy(desiredLook);
+      camDist = wantDist;
+      camera.position.copy(dir).multiplyScalar(camDist).add(lookTarget);
+      camInitialised = true;
+    }
+
+    // The dolly lags the pan, so the frame breathes instead of snapping.
+    camDist += (wantDist - camDist) * (exOn ? k : k * 0.55);
+    lookTarget.lerp(desiredLook, k);
+    desiredPos.copy(dir).multiplyScalar(camDist).add(lookTarget);
+    camera.position.lerp(desiredPos, k);
+
+    camera.updateProjectionMatrix();
+    camera.lookAt(lookTarget);
+  }
+
+  // =====================================================================
+  // HUD rendering
+  // =====================================================================
+  var clockTime = document.getElementById("clockTime");
+  var phaseTag = document.getElementById("phaseTag");
+  var costNum = document.getElementById("costNum");
+  var costGauge = document.getElementById("costGauge");
+  var handEl = document.getElementById("hand");
+  var rosterEl = document.getElementById("roster");
+  var resultEl = document.getElementById("result");
+  var resultTitle = document.getElementById("resultTitle");
+  var resultNote = document.getElementById("resultNote");
+
+  var costCells = [];
+  for (var gi = 0; gi < MAX_COST; gi++) {
+    var cell = document.createElement("i");
+    var inner = document.createElement("b");
+    cell.appendChild(inner);
+    costGauge.appendChild(cell);
+    costCells.push(inner);
+  }
+
+  var cardEls = [];
+  for (var hi = 0; hi < HAND_SIZE; hi++) {
+    var card = document.createElement("button");
+    card.type = "button";
+    card.className = "card empty";
+    card.dataset.slot = String(hi);
+    handEl.appendChild(card);
+    cardEls.push(card);
+  }
+
+  handEl.addEventListener("click", function (ev) {
+    var discardBtn = ev.target.closest(".discard");
+    if (discardBtn) {
+      ev.stopPropagation();
+      discardCard(Number(discardBtn.dataset.slot));
+      return;
+    }
+    var cardBtn = ev.target.closest(".card");
+    if (cardBtn && !cardBtn.disabled) playCard(Number(cardBtn.dataset.slot));
+  });
+
+  var rosterChips = [];
+  function buildRoster() {
+    rosterEl.innerHTML = "";
+    rosterChips = [];
+    for (var i = 0; i < allies.length; i++) {
+      var u = allies[i];
+      var chip = document.createElement("div");
+      chip.className = "chip panel";
+      chip.innerHTML =
+        '<div class="chipTop"><span class="chipName"></span><span class="chipGrade"></span></div>' +
+        '<div class="chipMeta"></div><div class="chipBar"><i></i></div>';
+      rosterEl.appendChild(chip);
+      rosterChips.push({
+        unit: u,
+        root: chip,
+        name: chip.querySelector(".chipName"),
+        grade: chip.querySelector(".chipGrade"),
+        meta: chip.querySelector(".chipMeta"),
+        bar: chip.querySelector(".chipBar i")
+      });
+    }
+    renderRoster();
+  }
+
+  var GRADE_COLOR = { S: "var(--ally)", A: "var(--ally)", B: "var(--ink-dim)", C: "var(--warn)", D: "var(--enemy)" };
+
+  function renderRoster() {
+    for (var i = 0; i < rosterChips.length; i++) {
+      var c = rosterChips[i];
+      var s = c.unit.stats;
+      var g = s.grades[battle.terrain];
+      c.name.textContent = s.name;
+      c.grade.textContent = g;
+      c.grade.style.color = GRADE_COLOR[g];
+      c.meta.textContent = TYPE_KO[s.atkType] + " · " + (s.role === "Striker" ? "스트라이커" : "스페셜");
+      c.root.classList.toggle("down", isDead(c.unit));
+      c.bar.style.transform = "scaleX(" + hpFrac(c.unit) + ")";
+    }
+  }
+
+  function renderHand() {
+    for (var i = 0; i < HAND_SIZE; i++) {
+      var el = cardEls[i];
+      var card = hand[i];
+
+      if (!card) {
+        el.className = "card empty";
+        el.disabled = true;
+        el.innerHTML = '<span class="cardWait">WAIT</span>';
+        el.removeAttribute("aria-label");
+        continue;
+      }
+
+      var affordable = Math.floor(battle.cost) >= card.cost && battle.phase === "Fighting" && !battle.exBusy;
+      el.className = "card" + (affordable ? " ready" : "");
+      el.disabled = !affordable;
+      el.setAttribute("aria-label", card.owner.stats.name + " " + card.owner.stats.exName + ", 코스트 " + card.cost);
+      el.innerHTML =
+        '<div class="cardOwner">' + card.owner.stats.name + "</div>" +
+        '<div class="cardSkill">' + card.owner.stats.exName + "</div>" +
+        '<button type="button" class="discard" data-slot="' + i + '" aria-label="카드 교체">&times;</button>' +
+        '<span class="cardCost">' + card.cost + "</span>";
+    }
+  }
+
+  var lastCostStep = -1;
+  function renderCost() {
+    costNum.textContent = battle.cost.toFixed(2);
+    var whole = Math.floor(battle.cost);
+    var partial = battle.cost - whole;
+
+    for (var i = 0; i < costCells.length; i++) {
+      var fill = i < whole ? 1 : (i === whole ? partial : 0);
+      costCells[i].style.transform = "scaleX(" + fill + ")";
+      costCells[i].style.opacity = i < whole ? "1" : "0.55";
+    }
+    if (whole !== lastCostStep) {
+      lastCostStep = whole;
+      renderHand();
+    }
+  }
+
+  function renderClock() {
+    var secs = Math.max(0, Math.ceil(battle.timeLeft));
+    clockTime.textContent = Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0");
+    clockTime.classList.toggle("low", battle.timeLeft < 20);
+    var label = { Street: "시가지", Outdoor: "야외", Indoor: "실내" }[battle.terrain];
+    phaseTag.textContent = battle.exBusy ? "EX SKILL" : label;
+  }
+
+  function endBattle(outcome) {
+    if (battle.phase === "Victory" || battle.phase === "Defeat") return;
+    battle.phase = outcome;
+    battle.exBusy = false;
+
+    var win = outcome === "Victory";
+    resultTitle.textContent = win ? "VICTORY" : "DEFEAT";
+    resultTitle.className = win ? "win" : "lose";
+
+    var standing = living("Player").length;
+    resultNote.textContent = win
+      ? "생존 " + standing + "명 · 남은 시간 " + Math.ceil(battle.timeLeft) + "초"
+      : (battle.timeLeft <= 0 ? "제한 시간 초과. 상성이 맞는 편성인지 확인해 보세요."
+                              : "분대 전멸. 지형을 바꾸거나 EX 타이밍을 조정해 보세요.");
+    resultEl.hidden = false;
+    renderHand();
+  }
+
+  // =====================================================================
+  // Setup / restart
+  // =====================================================================
+  function clearBattle() {
+    for (var i = 0; i < units.length; i++) {
+      world.remove(units[i].model.group);
+      if (units[i].barEl) units[i].barEl.remove();
+    }
+    units = [];
+    allies = [];
+    enemies = [];
+    for (var c = 0; c < coverPoints.length; c++) coverPoints[c].occupant = null;
+  }
+
+  function setupBattle() {
+    clearBattle();
+
+    now = 0;
+    battle.phase = "Fighting";
+    battle.timeLeft = BATTLE_SECONDS;
+    battle.cost = START_COST;
+    battle.exBusy = false;
+    battle.exCaster = null;
+    lastCostStep = -1;
+    camInitialised = false;
+
+    var laneCount = {};
+    var squad = squadData();
+    for (var i = 0; i < squad.length; i++) {
+      var e = squad[i];
+      var stacked = laneCount[e.lane] || 0;
+      laneCount[e.lane] = stacked + 1;
+      var x = -14 - stacked * 2.6;
+      if (e.stats.role === "Special") x -= 4;
+      makeUnit(e, "Player", x);
+    }
+
+    laneCount = {};
+    var wave = waveData();
+    for (var j = 0; j < wave.length; j++) {
+      var w = wave[j];
+      var st = laneCount[w.lane] || 0;
+      laneCount[w.lane] = st + 1;
+      makeUnit(w, "Enemy", 13 + st * 2.6);
+    }
+
+    for (var k = 0; k < units.length; k++) {
+      makeBar(units[k]);
+      units[k].autoSkillAt = 6;
+    }
+
+    buildDeck();
+    buildRoster();
+    renderHand();
+    resultEl.hidden = true;
+  }
+
+  // =====================================================================
+  // Controls
+  // =====================================================================
+  document.getElementById("terrainSeg").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button");
+    if (!btn) return;
+    battle.terrain = btn.dataset.terrain;
+    var all = this.querySelectorAll("button");
+    for (var i = 0; i < all.length; i++) {
+      all[i].setAttribute("aria-pressed", String(all[i] === btn));
+    }
+    renderRoster();
+    renderClock();
+  });
+
+  document.getElementById("speedSeg").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button");
+    if (!btn) return;
+    battle.speed = Number(btn.dataset.speed);
+    var all = this.querySelectorAll("button");
+    for (var i = 0; i < all.length; i++) {
+      all[i].setAttribute("aria-pressed", String(all[i] === btn));
+    }
+  });
+
+  var sheet = document.getElementById("sheet");
+  var infoBtn = document.getElementById("infoBtn");
+  function setSheet(open) {
+    sheet.hidden = !open;
+    infoBtn.setAttribute("aria-expanded", String(open));
+  }
+  infoBtn.addEventListener("click", function () { setSheet(sheet.hidden); });
+  document.getElementById("closeSheet").addEventListener("click", function () { setSheet(false); });
+  sheet.addEventListener("click", function (ev) { if (ev.target === sheet) setSheet(false); });
+
+  document.getElementById("retry").addEventListener("click", function () { setupBattle(); });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "1" || ev.key === "2" || ev.key === "3") playCard(Number(ev.key) - 1);
+    else if (ev.key === "Escape") setSheet(false);
+  });
+
+  var hintEl = document.getElementById("hint");
+  setTimeout(function () {
+    hintEl.style.opacity = "0";
+    setTimeout(function () { hintEl.remove(); }, 700);
+  }, 7000);
+
+  // =====================================================================
+  // Resize + main loop
+  // =====================================================================
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    // CSS pixels, not device pixels, so outline thickness is DPR-independent.
+    screenRes.value.set(w, h);
+  }
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", function () { setTimeout(resize, 160); });
+  resize();
+
+  var lastFrame = performance.now();
+
+  function frame(stamp) {
+    requestAnimationFrame(frame);
+
+    var realDt = Math.min(0.05, (stamp - lastFrame) / 1000);
+    lastFrame = stamp;
+
+    var fighting = battle.phase === "Fighting" || battle.phase === "ExCinematic";
+
+    // The EX beat slows the simulation without slowing the camera, same as
+    // the Unity build's Time.timeScale dip.
+    var scale = battle.exBusy ? 0.35 : battle.speed;
+    var dt = fighting ? realDt * scale : 0;
+    now += dt;
+
+    if (fighting) {
+      battle.timeLeft -= dt;
+      if (battle.timeLeft <= 0) { battle.timeLeft = 0; endBattle("Defeat"); }
+
+      // Cost pauses during the cinematic so the slow-motion is not free value.
+      if (battle.phase === "Fighting" && !battle.exBusy) {
+        battle.cost = Math.min(MAX_COST, battle.cost + COST_REGEN * dt * battle.speed);
+      }
+
+      for (var i = 0; i < units.length; i++) tickUnit(units[i], dt);
+
+      // Specials fire their skill on a free timer.
+      for (var j = 0; j < allies.length; j++) {
+        var sp = allies[j];
+        if (sp.stats.role !== "Special" || isDead(sp)) continue;
+        if (now >= sp.autoSkillAt && !battle.exBusy) {
+          sp.autoSkillAt = now + 14;
+          resolveSkill(sp);
+        }
+      }
+
+      tickEx();
+      refillHand();
+    }
+
+    // ---- visuals -----------------------------------------------------------
+    for (var k = 0; k < units.length; k++) {
+      var u = units[k];
+      var g = u.model.group;
+      g.position.x = u.x;
+
+      if (isDead(u)) {
+        var sink = Math.min(1, (now - u.deadAt) / 0.7);
+        g.position.y = -1.4 * sink * sink;
+        g.visible = sink < 1;
+      } else {
+        g.position.y = 0;
+        g.visible = true;
+        u.model.halo.rotation.z += 0.5 * realDt;
+      }
+    }
+
+    updateCamera(realDt);
+    updateBars();
+    updatePops();
+    updateTracers();
+    renderCost();
+    renderClock();
+    renderRoster();
+
+    renderer.render(scene, camera);
+  }
+
+  function start() {
+    setupBattle();
+    requestAnimationFrame(function (t) { lastFrame = t; frame(t); });
+  }
+
+  // Published updates reach open viewers mid-game; boot through the viewer's
+  // hook when it exists so a reload does not drop the fight on the floor.
+  if (window.claude && window.claude.hot && window.claude.hot.ready) {
+    window.claude.hot.ready(start);
+  } else {
+    start();
+  }
+})();
+</script>
